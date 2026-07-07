@@ -197,6 +197,7 @@ class RTCIceGatherer(AsyncIOEventEmitter):
             ice_controlling=False,
             local_username=local_username,
             local_password=local_password,
+            on_local_candidate=self.__onLocalCandidate,
             **ice_kwargs,
         )
         self._remote_candidates_end = False
@@ -242,6 +243,9 @@ class RTCIceGatherer(AsyncIOEventEmitter):
             usernameFragment=self._connection.local_username,
             password=self._connection.local_password,
         )
+
+    def __onLocalCandidate(self, candidate: Candidate) -> None:
+        self.emit("icecandidate", candidate_from_aioice(candidate))
 
     def __setState(self, state: str) -> None:
         self.__state = state

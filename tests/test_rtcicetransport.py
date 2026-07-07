@@ -252,6 +252,18 @@ class RTCIceGathererTest(TestCase):
         # close
         await gatherer._connection.close()
 
+    @asynctest
+    async def test_gather_emits_candidates(self) -> None:
+        gatherer = RTCIceGatherer()
+        candidates: list[RTCIceCandidate] = []
+        gatherer.on("icecandidate", candidates.append)
+        await gatherer.gather()
+        self.assertTrue(len(candidates) > 0)
+        self.assertEqual(candidates, gatherer.getLocalCandidates())
+
+        # close
+        await gatherer._connection.close()
+
     def test_default_ice_servers(self) -> None:
         self.assertEqual(
             RTCIceGatherer.getDefaultIceServers(),

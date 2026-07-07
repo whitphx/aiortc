@@ -4334,6 +4334,89 @@ a=rtpmap:0 PCMU/8000
         await self._test_connect_datachannel_trickle(with_mid=False)
 
     @asynctest
+    async def test_connect_datachannel_trickle_ice(self) -> None:
+        """
+        Connect with trickle ICE enabled: descriptions are exchanged before
+        gathering completes and candidates flow through "icecandidate" events.
+        """
+        pc1 = RTCPeerConnection(RTCConfiguration(trickleIce=True))
+        pc1_states = track_states(pc1)
+        pc1_candidates: list[Optional[RTCIceCandidate]] = []
+
+        pc2 = RTCPeerConnection(RTCConfiguration(trickleIce=True))
+        pc2_states = track_states(pc2)
+        pc2_data_channels: list[RTCDataChannel] = []
+
+        @pc1.on("icecandidate")
+        def on_pc1_icecandidate(candidate: Optional[RTCIceCandidate]) -> None:
+            pc1_candidates.append(candidate)
+            asyncio.ensure_future(pc2.addIceCandidate(candidate))
+
+        @pc2.on("icecandidate")
+        def on_pc2_icecandidate(candidate: Optional[RTCIceCandidate]) -> None:
+            asyncio.ensure_future(pc1.addIceCandidate(candidate))
+
+        @pc2.on("datachannel")
+        def on_datachannel(channel: RTCDataChannel) -> None:
+            pc2_data_channels.append(channel)
+
+        # create data channel
+        dc = pc1.createDataChannel("chat")
+
+        # create and handle offer, which contains no candidates
+        await pc1.setLocalDescription(await pc1.createOffer())
+        self.assertFalse("a=candidate:" in pc1.localDescription.sdp)
+        self.assertFalse("a=end-of-candidates" in pc1.localDescription.sdp)
+        self.assertTrue("a=ice-options:trickle" in pc1.localDescription.sdp)
+        await pc2.setRemoteDescription(pc1.localDescription)
+
+        # create and handle answer, which contains no candidates
+        await pc2.setLocalDescription(await pc2.createAnswer())
+        self.assertFalse("a=candidate:" in pc2.localDescription.sdp)
+        self.assertTrue("a=ice-options:trickle" in pc2.localDescription.sdp)
+        await pc1.setRemoteDescription(pc2.localDescription)
+
+        # check outcome
+        await self.assertIceCompleted(pc1, pc2)
+        await self.assertDataChannelOpen(dc)
+        self.assertEqual(len(pc2_data_channels), 1)
+
+        # ICE may complete while gathering is still in progress, so wait for
+        # gathering to finish before checking the emitted candidates
+        await self.sleepWhile(
+            lambda: (
+                pc1.iceGatheringState != "complete"
+                or pc2.iceGatheringState != "complete"
+            ),
+            max_sleep=5.0,
+        )
+
+        # candidates were emitted, ending with `None`
+        self.assertTrue(len(pc1_candidates) > 1)
+        self.assertTrue(all(x is not None for x in pc1_candidates[:-1]))
+        self.assertTrue(all(x.sdpMid is not None for x in pc1_candidates[:-1]))
+        self.assertIsNone(pc1_candidates[-1])
+
+        # the local description now reflects the gathered candidates
+        self.assertTrue("a=candidate:" in pc1.localDescription.sdp)
+        self.assertTrue("a=end-of-candidates" in pc1.localDescription.sdp)
+
+        # close
+        await self.closeDataChannel(dc)
+        await pc1.close()
+        await pc2.close()
+        self.assertClosed(pc1)
+        self.assertClosed(pc2)
+
+        # check state changes
+        self.assertEqual(
+            pc1_states["iceGatheringState"], ["new", "gathering", "complete"]
+        )
+        self.assertEqual(
+            pc2_states["iceGatheringState"], ["new", "gathering", "complete"]
+        )
+
+    @asynctest
     async def test_connect_datachannel_max_packet_lifetime(self) -> None:
         pc1 = RTCPeerConnection()
         pc1_data_messages = []

@@ -67,3 +67,21 @@ class RTCConfiguration:
 
     alwaysNegotiateDataChannels: bool = False
     "Whether to always negotiate data channels in the SDP."
+
+    trickleIce: bool = False
+    """
+    Whether to trickle ICE candidates.
+
+    When enabled, :meth:`RTCPeerConnection.setLocalDescription` does not wait
+    for ICE gathering to complete. Instead, each candidate is emitted through
+    the :class:`RTCPeerConnection` `"icecandidate"` event as it is discovered,
+    and should be sent to the remote party over the signaling channel. Once
+    gathering completes, the event is emitted with `None`.
+
+    This is an aiortc-specific extension: the W3C specification always
+    trickles, but aiortc's historical behaviour is to wait for gathering.
+
+    Note that per RFC 8838 an answerer should only trickle if the offerer
+    indicated support for it (e.g. with an `a=ice-options:trickle` SDP
+    attribute); checking this is the application's responsibility.
+    """

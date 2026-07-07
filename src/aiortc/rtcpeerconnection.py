@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import functools
 import logging
 import uuid
 from typing import Optional, Union
@@ -315,6 +316,7 @@ class RTCPeerConnection(AsyncIOEventEmitter):
         self.__transceivers: list[RTCRtpTransceiver] = []
 
         self.__closeTask: Optional[asyncio.Task] = None
+        self.__gatherTasks: list[asyncio.Future[None]] = []
         self.__connectionState = "new"
         self.__iceConnectionState = "new"
         self.__iceGatheringState = "new"
@@ -519,6 +521,11 @@ class RTCPeerConnection(AsyncIOEventEmitter):
             return
         self.__isClosed = asyncio.Future()
         self.__setSignalingState("closed")
+
+        # stop candidate gathering
+        for task in self.__gatherTasks:
+            if not task.done():
+                task.cancel()
 
         # stop senders / receivers
         for transceiver in self.__transceivers:
@@ -856,13 +863,19 @@ class RTCPeerConnection(AsyncIOEventEmitter):
                 t._setCurrentDirection(and_direction(t.direction, t._offerDirection))
 
         # gather candidates
-        await self.__gather()
+        if self.__configuration.trickleIce:
+            self.__gatherTasks = [t for t in self.__gatherTasks if not t.done()]
+            self.__gatherTasks.append(asyncio.ensure_future(self.__gather()))
+        else:
+            await self.__gather()
         for i, media in enumerate(description.media):
             if media.kind in ["audio", "video"]:
                 transceiver = self.__getTransceiverByMLineIndex(i)
                 add_transport_description(media, transceiver.receiver.transport)
             elif media.kind == "application":
                 add_transport_description(media, self.__sctp.transport)
+            if self.__configuration.trickleIce:
+                media.ice_options = "trickle"
 
         # connect
         asyncio.ensure_future(self.__connect())
@@ -1135,6 +1148,10 @@ class RTCPeerConnection(AsyncIOEventEmitter):
             iceGatherer = RTCIceGatherer(iceServers=self.__configuration.iceServers)
 
         iceGatherer.on("statechange", self.__updateIceGatheringState)
+        iceGatherer.on(
+            "icecandidate",
+            functools.partial(self.__onIceCandidate, iceGatherer),
+        )
         iceTransport = RTCIceTransport(iceGatherer)
         iceTransport.on("statechange", self.__updateIceConnectionState)
         iceTransport.on("statechange", self.__updateConnectionState)
@@ -1215,6 +1232,58 @@ class RTCPeerConnection(AsyncIOEventEmitter):
 
     def __localDescription(self) -> Optional[sdp.SessionDescription]:
         return self.__pendingLocalDescription or self.__currentLocalDescription
+
+    def __onIceCandidate(
+        self, iceGatherer: RTCIceGatherer, candidate: RTCIceCandidate
+    ) -> None:
+        # Determine which media section the candidate belongs to. With
+        # bundling, several media sections may share a transport, in which
+        # case the candidate is attributed to the bundle's primary section.
+        sdpMid: Optional[str] = None
+        sdpMLineIndex: Optional[int] = None
+        for transceiver in self.__transceivers:
+            if (
+                transceiver.receiver.transport.transport.iceGatherer is iceGatherer
+                and not transceiver._bundled
+            ):
+                sdpMid = transceiver.mid
+                sdpMLineIndex = transceiver._get_mline_index()
+                break
+        if (
+            sdpMid is None
+            and self.__sctp
+            and self.__sctp.transport.transport.iceGatherer is iceGatherer
+            and not self.__sctp._bundled
+        ):
+            sdpMid = self.__sctp.mid
+            sdpMLineIndex = self.__sctp_mline_index
+        if sdpMid is None:
+            self.__log_debug(
+                "Discarding local candidate with no matching media section: %s",
+                candidate,
+            )
+            return
+        candidate.sdpMid = sdpMid
+        candidate.sdpMLineIndex = sdpMLineIndex
+
+        # Update the local description, so that it reflects the candidates
+        # gathered so far, as browsers do.
+        if local_description := self.__localDescription():
+            for media in local_description.media:
+                if media.rtp.muxId == sdpMid:
+                    media.ice_candidates.append(candidate)
+
+        # With trickle ICE, gathering runs in the background, so the first
+        # candidate is what makes it possible to start connectivity checks.
+        # Without it, connecting is handled by setLocalDescription /
+        # setRemoteDescription alone, preserving their ordering guarantees.
+        if (
+            self.__configuration.trickleIce
+            and len(iceGatherer.getLocalCandidates()) == 1
+        ):
+            asyncio.ensure_future(self.__connect())
+
+        self.emit("icecandidate", candidate)
 
     def __localRtp(self, transceiver: RTCRtpTransceiver) -> RTCRtpSendParameters:
         rtp = RTCRtpSendParameters(
@@ -1343,6 +1412,15 @@ class RTCPeerConnection(AsyncIOEventEmitter):
             )
             self.__iceGatheringState = state
             self.emit("icegatheringstatechange")
+
+            if state == "complete":
+                # mark the local description as having all its candidates
+                if local_description := self.__localDescription():
+                    for media in local_description.media:
+                        media.ice_candidates_complete = True
+
+                # a `None` candidate signals the end of gathering
+                self.emit("icecandidate", None)
 
     def __validate_description(
         self, description: sdp.SessionDescription, is_local: bool
