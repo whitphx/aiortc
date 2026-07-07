@@ -316,6 +316,7 @@ class RTCPeerConnection(AsyncIOEventEmitter):
         self.__transceivers: list[RTCRtpTransceiver] = []
 
         self.__closeTask: Optional[asyncio.Task] = None
+        self.__connectLock: Optional[asyncio.Lock] = None
         self.__gatherTasks: list[asyncio.Future[None]] = []
         self.__connectionState = "new"
         self.__iceConnectionState = "new"
@@ -1083,6 +1084,16 @@ class RTCPeerConnection(AsyncIOEventEmitter):
             self.__pendingRemoteDescription = description
 
     async def __connect(self) -> None:
+        # Serialise concurrent invocations: __connect is scheduled from
+        # setLocalDescription, setRemoteDescription and, with trickle ICE,
+        # each gathered candidate. The per-transport start guards in
+        # __connectInner are not safe against overlapping callers.
+        if self.__connectLock is None:
+            self.__connectLock = asyncio.Lock()
+        async with self.__connectLock:
+            await self.__connectInner()
+
+    async def __connectInner(self) -> None:
         for transceiver in self.__transceivers:
             dtlsTransport = transceiver.receiver.transport
             iceTransport = dtlsTransport.transport
@@ -1273,14 +1284,11 @@ class RTCPeerConnection(AsyncIOEventEmitter):
                 if media.rtp.muxId == sdpMid:
                     media.ice_candidates.append(candidate)
 
-        # With trickle ICE, gathering runs in the background, so the first
-        # candidate is what makes it possible to start connectivity checks.
+        # With trickle ICE, gathering runs in the background, so a newly
+        # gathered candidate may allow a pending handshake to start.
         # Without it, connecting is handled by setLocalDescription /
         # setRemoteDescription alone, preserving their ordering guarantees.
-        if (
-            self.__configuration.trickleIce
-            and len(iceGatherer.getLocalCandidates()) == 1
-        ):
+        if self.__configuration.trickleIce:
             asyncio.ensure_future(self.__connect())
 
         self.emit("icecandidate", candidate)

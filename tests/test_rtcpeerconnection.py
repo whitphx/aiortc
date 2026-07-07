@@ -4339,11 +4339,11 @@ a=rtpmap:0 PCMU/8000
         Connect with trickle ICE enabled: descriptions are exchanged before
         gathering completes and candidates flow through "icecandidate" events.
         """
-        pc1 = RTCPeerConnection(RTCConfiguration(trickleIce=True))
+        pc1 = RTCPeerConnection(RTCConfiguration(iceServers=[], trickleIce=True))
         pc1_states = track_states(pc1)
         pc1_candidates: list[Optional[RTCIceCandidate]] = []
 
-        pc2 = RTCPeerConnection(RTCConfiguration(trickleIce=True))
+        pc2 = RTCPeerConnection(RTCConfiguration(iceServers=[], trickleIce=True))
         pc2_states = track_states(pc2)
         pc2_data_channels: list[RTCDataChannel] = []
 
