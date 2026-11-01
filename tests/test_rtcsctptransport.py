@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncGenerator, Generator
 from typing import TypeVar, cast
 from unittest import TestCase
@@ -1634,6 +1635,157 @@ class RTCSctpTransportTest(TestCase):
             self.assertEqual(outstanding_tsns(client), [5, 6, 7, 8])
             self.assertEqual(client._flight_size, 4 * USERDATA_MAX_LENGTH)
             self.assertEqual(client._cwnd, 4 * USERDATA_MAX_LENGTH)
+
+    @asynctest
+    async def test_send_data_expired_before_transmission(self) -> None:
+        sent_tsns = []
+        forward_tsns = []
+
+        async def mock_send_chunk(chunk: Chunk) -> None:
+            if isinstance(chunk, DataChunk):
+                sent_tsns.append(chunk.tsn)
+            elif isinstance(chunk, ForwardTsnChunk):
+                forward_tsns.append(chunk.cumulative_tsn)
+
+        async with client_standalone() as client:
+            client._last_sacked_tsn = 4294967295
+            client._local_tsn = 0
+            client._ssthresh = 131072
+            client._send_chunk = mock_send_chunk  # type: ignore
+
+            # Queue 6 chunks, but cwnd only allows 3.
+            now = time.time()
+            await client._send(123, 456, b"M" * USERDATA_MAX_LENGTH * 6, expiry=now + 1)
+            self.assertEqual(sent_tsns, [0, 1, 2])
+            self.assertEqual(queued_tsns(client), [3, 4, 5])
+
+            # SACK comes in acknowledging chunk 0 after the lifetime expired.
+            sack = SackChunk()
+            sack.cumulative_tsn = 0
+            with patch("aiortc.rtcsctptransport.time.time", return_value=now + 2):
+                await client._receive_chunk(sack)
+
+            # The rest of the message is abandoned, sent or not, and a FORWARD TSN
+            # skips it.
+            self.assertEqual(sent_tsns, [0, 1, 2])
+            self.assertEqual(forward_tsns, [5])
+            self.assertEqual(outstanding_tsns(client), [])
+            self.assertEqual(queued_tsns(client), [])
+            self.assertEqual(client._advanced_peer_ack_tsn, 5)
+            self.assertEqual(client._flight_size, 0)
+
+            # The next message is sent.
+            await client._send(123, 456, b"M" * USERDATA_MAX_LENGTH)
+            self.assertEqual(sent_tsns, [0, 1, 2, 6])
+
+    @asynctest
+    async def test_send_data_expired_before_retransmission(self) -> None:
+        sent_tsns = []
+
+        async def mock_send_chunk(chunk: Chunk) -> None:
+            if isinstance(chunk, DataChunk):
+                sent_tsns.append(chunk.tsn)
+
+        async with client_standalone() as client:
+            client._last_sacked_tsn = 4294967295
+            client._local_tsn = 0
+            client._ssthresh = 131072
+            client._send_chunk = mock_send_chunk  # type: ignore
+
+            now = time.time()
+            await client._send(123, 456, b"M" * USERDATA_MAX_LENGTH * 3, expiry=now + 1)
+            self.assertEqual(sent_tsns, [0, 1, 2])
+
+            # T3 expires, and the reduced cwnd only allows one retransmission.
+            client._t3_expired()
+            await asyncio.sleep(0)
+            self.assertEqual(sent_tsns, [0, 1, 2, 0])
+
+            # SACK comes in acknowledging chunk 0 after the lifetime expired.
+            sack = SackChunk()
+            sack.cumulative_tsn = 0
+            with patch("aiortc.rtcsctptransport.time.time", return_value=now + 2):
+                await client._receive_chunk(sack)
+
+            # Chunks 1 and 2 are abandoned instead of retransmitted.
+            self.assertEqual(sent_tsns, [0, 1, 2, 0])
+            self.assertEqual(outstanding_tsns(client), [])
+            self.assertEqual(client._advanced_peer_ack_tsn, 2)
+            self.assertEqual(client._flight_size, 0)
+
+    @asynctest
+    async def test_send_data_expired_behind_reliable_message(self) -> None:
+        sent_tsns = []
+
+        async def mock_send_chunk(chunk: Chunk) -> None:
+            if isinstance(chunk, DataChunk):
+                sent_tsns.append(chunk.tsn)
+
+        async with client_standalone() as client:
+            client._last_sacked_tsn = 4294967295
+            client._local_tsn = 0
+            client._ssthresh = 131072
+            client._send_chunk = mock_send_chunk  # type: ignore
+
+            # A reliable message fills cwnd, and two more wait behind it.
+            now = time.time()
+            await client._send(123, 456, b"M" * USERDATA_MAX_LENGTH * 3)
+            await client._send(123, 456, b"R" * USERDATA_MAX_LENGTH)
+            await client._send(124, 456, b"E" * USERDATA_MAX_LENGTH * 2, expiry=now + 1)
+            self.assertEqual(sent_tsns, [0, 1, 2])
+            self.assertEqual(queued_tsns(client), [3, 4, 5])
+
+            # SACK comes in acknowledging all chunks after the lifetime expired.
+            sack = SackChunk()
+            sack.cumulative_tsn = 2
+            with patch("aiortc.rtcsctptransport.time.time", return_value=now + 2):
+                await client._receive_chunk(sack)
+
+            # The reliable message is sent and the expired one is abandoned.
+            self.assertEqual(sent_tsns, [0, 1, 2, 3])
+            self.assertEqual(outstanding_tsns(client), [3, 4, 5])
+            self.assertEqual(queued_tsns(client), [])
+            self.assertEqual(client._flight_size, USERDATA_MAX_LENGTH)
+
+    @asynctest
+    async def test_send_data_forward_tsn_keeps_pending_streams(self) -> None:
+        forward_tsn_chunks = []
+
+        async def mock_send_chunk(chunk: Chunk) -> None:
+            if isinstance(chunk, ForwardTsnChunk):
+                forward_tsn_chunks.append(chunk)
+
+        async with client_standalone() as client:
+            client._last_sacked_tsn = 4294967295
+            client._local_tsn = 0
+            client._ssthresh = 131072
+            client._send_chunk = mock_send_chunk  # type: ignore
+
+            now = time.time()
+            await client._send(1, 456, b"A", max_retransmits=0)
+            await client._send(2, 456, b"B", expiry=now + 1)
+            await client._send(3, 456, b"C")
+            self.assertEqual(outstanding_tsns(client), [0, 1, 2])
+
+            # Chunk 0 has been missed twice and chunk 1 waits for retransmission.
+            chunk_a, chunk_b, _ = client._sent_queue
+            chunk_a._misses = 2
+            chunk_b._retransmit = True
+            client._flight_size_decrease(chunk_b)
+
+            # SACK comes in acknowledging chunk 2 after the lifetime expired,
+            # which abandons chunk 0 when it is struck and chunk 1 before its
+            # retransmission.
+            sack = SackChunk()
+            sack.cumulative_tsn = 4294967295
+            sack.gaps = [(3, 3)]
+            with patch("aiortc.rtcsctptransport.time.time", return_value=now + 2):
+                await client._receive_chunk(sack)
+
+            # One FORWARD TSN covers both streams.
+            self.assertEqual(len(forward_tsn_chunks), 1)
+            self.assertEqual(forward_tsn_chunks[0].cumulative_tsn, 1)
+            self.assertEqual(forward_tsn_chunks[0].streams, [(1, 0), (2, 0)])
 
     @asynctest
     async def test_stale_cookie(self) -> None:

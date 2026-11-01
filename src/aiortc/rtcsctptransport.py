@@ -805,6 +805,18 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         self.__transport._unregister_data_receiver(self)
         self._set_state(self.State.CLOSED)
 
+    def _abandon_expired(self) -> None:
+        """
+        Abandon the messages whose chunks waiting for retransmission have
+        expired (RFC 3758 section 4.1 TR4).
+        """
+        abandoned = False
+        for chunk in self._sent_queue:
+            if chunk._retransmit and self._maybe_abandon(chunk):
+                abandoned = True
+        if abandoned:
+            self._update_advanced_peer_ack_point()
+
     async def _abort(self) -> None:
         """
         Abort the association.
@@ -1410,6 +1422,15 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             )
         )
 
+    async def _send_forward_tsn(self) -> None:
+        if self._forward_tsn_chunk is not None:
+            await self._send_chunk(self._forward_tsn_chunk)
+            self._forward_tsn_chunk = None
+
+            # ensure T3 is running
+            if not self._t3_handle:
+                self._t3_start()
+
     async def _send_reconfig_param(
         self,
         param: Union[
@@ -1575,14 +1596,8 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         """
         Transmit outbound data.
         """
-        # send FORWARD TSN
-        if self._forward_tsn_chunk is not None:
-            await self._send_chunk(self._forward_tsn_chunk)
-            self._forward_tsn_chunk = None
-
-            # ensure T3 is running
-            if not self._t3_handle:
-                self._t3_start()
+        self._abandon_expired()
+        await self._send_forward_tsn()
 
         # limit burst size
         if self._fast_recovery_exit is not None:
@@ -1611,10 +1626,17 @@ class RTCSctpTransport(AsyncIOEventEmitter):
                     self._t3_restart()
             retransmit_earliest = False
 
+        abandoned = False
         while self._outbound_queue and self._flight_size < cwnd:
             chunk = self._outbound_queue.popleft()
             self._sent_queue.append(chunk)
             self._flight_size_increase(chunk)
+
+            # The chunk already has a TSN, so an expired one is skipped through
+            # a FORWARD TSN (RFC 3758 section 4.1 TR4).
+            if self._maybe_abandon(chunk):
+                abandoned = True
+                continue
 
             # update counters
             chunk._sent_count += 1
@@ -1623,6 +1645,10 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             await self._send_chunk(chunk)
             if not self._t3_handle:
                 self._t3_start()
+
+        if abandoned:
+            self._update_advanced_peer_ack_point()
+            await self._send_forward_tsn()
 
     async def _transmit_reconfig(self) -> None:
         if (
@@ -1651,7 +1677,13 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             self._advanced_peer_ack_tsn = self._last_sacked_tsn
 
         done = 0
-        streams = {}
+        # A FORWARD TSN that is not sent yet is replaced, so its streams carry
+        # over, or the peer never learns their skipped sequence numbers.
+        streams = (
+            dict(self._forward_tsn_chunk.streams)
+            if self._forward_tsn_chunk is not None
+            else {}
+        )
         while self._sent_queue and self._sent_queue[0]._abandoned:
             chunk = self._sent_queue.popleft()
             self._advanced_peer_ack_tsn = chunk.tsn
