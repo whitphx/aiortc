@@ -903,6 +903,12 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         if self._sack_needed:
             await self._send_sack()
 
+    def _in_flight(self, chunk: DataChunk) -> bool:
+        """
+        Whether a chunk in the sent queue is counted in the flight size.
+        """
+        return not (chunk._acked or chunk._abandoned or chunk._retransmit)
+
     def _maybe_abandon(self, chunk: DataChunk) -> bool:
         """
         Determine if a chunk needs to be marked as abandoned.
@@ -920,17 +926,23 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         if not abandon:
             return False
 
+        def mark_abandoned(ochunk: DataChunk) -> None:
+            # An abandoned chunk is no longer outstanding (RFC 3758 section
+            # 3.5 A2), and it may leave the sent queue without being acknowledged.
+            if self._in_flight(ochunk):
+                self._flight_size_decrease(ochunk)
+            ochunk._abandoned = True
+            ochunk._retransmit = False
+
         chunk_pos = self._sent_queue.index(chunk)
         for pos in range(chunk_pos, -1, -1):
             ochunk = self._sent_queue[pos]
-            ochunk._abandoned = True
-            ochunk._retransmit = False
+            mark_abandoned(ochunk)
             if ochunk.flags & SCTP_DATA_FIRST_FRAG:
                 break
         for pos in range(chunk_pos, len(self._sent_queue)):
             ochunk = self._sent_queue[pos]
-            ochunk._abandoned = True
-            ochunk._retransmit = False
+            mark_abandoned(ochunk)
             if ochunk.flags & SCTP_DATA_LAST_FRAG:
                 break
 
@@ -1198,7 +1210,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         ):
             schunk = self._sent_queue.popleft()
             done += 1
-            if not schunk._acked:
+            if not (schunk._acked or schunk._abandoned):
                 done_bytes += schunk._book_size
                 self._flight_size_decrease(schunk)
 
@@ -1220,7 +1232,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             for schunk in self._sent_queue:
                 if uint32_gt(schunk.tsn, highest_seen_tsn):
                     break
-                if schunk.tsn in seen and not schunk._acked:
+                if schunk.tsn in seen and not (schunk._acked or schunk._abandoned):
                     done_bytes += schunk._book_size
                     schunk._acked = True
                     self._flight_size_decrease(schunk)
@@ -1230,15 +1242,17 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             for schunk in self._sent_queue:
                 if uint32_gt(schunk.tsn, highest_newly_acked):
                     break
-                if schunk.tsn not in seen:
+                # An abandoned chunk counts as acknowledged (RFC 3758 section
+                # 3.5 A2), so it cannot go missing.
+                if schunk.tsn not in seen and not schunk._abandoned:
                     schunk._misses += 1
                     if schunk._misses == 3:
                         schunk._misses = 0
                         if not self._maybe_abandon(schunk):
+                            self._flight_size_decrease(schunk)
                             schunk._retransmit = True
 
                         schunk._acked = False
-                        self._flight_size_decrease(schunk)
 
                         loss = True
 

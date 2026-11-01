@@ -1550,6 +1550,92 @@ class RTCSctpTransportTest(TestCase):
             self.assertIsNotNone(client._t3_handle)
 
     @asynctest
+    async def test_send_data_abandon_with_chunks_in_flight(self) -> None:
+        async with client_standalone() as client:
+            client._last_sacked_tsn = 4294967295
+            client._local_tsn = 0
+            client._ssthresh = 131072
+            client._cwnd = 6 * USERDATA_MAX_LENGTH
+            client._send_chunk = noop_send_chunk  # type: ignore
+
+            # Send a message of 5 chunks which must not be retransmitted,
+            # followed by a reliable one.
+            await client._send(
+                123, 456, b"M" * USERDATA_MAX_LENGTH * 5, max_retransmits=0
+            )
+            await client._send(124, 456, b"M" * USERDATA_MAX_LENGTH)
+            self.assertEqual(outstanding_tsns(client), [0, 1, 2, 3, 4, 5])
+
+            # SACKs come in acknowledging chunks 1, 2 and 3.
+            for last_seen in [2, 3, 4]:
+                sack = SackChunk()
+                sack.cumulative_tsn = 4294967295
+                sack.gaps = [(2, last_seen)]  # TSN 0 is missing.
+                await client._receive_chunk(sack)
+
+            # Chunk 0 is abandoned on its third miss, and with it the whole
+            # message, including chunk 4 which is still in flight.
+            self.assertEqual(outstanding_tsns(client), [5])
+            self.assertEqual(client._advanced_peer_ack_tsn, 4)
+            self.assertEqual(client._flight_size, USERDATA_MAX_LENGTH)
+
+    @asynctest
+    async def test_send_data_abandon_on_t3_with_chunks_acknowledged_later(
+        self,
+    ) -> None:
+        async with client_standalone() as client:
+            client._last_sacked_tsn = 4294967295
+            client._local_tsn = 0
+            client._ssthresh = 131072
+            client._cwnd = 4 * USERDATA_MAX_LENGTH
+            client._send_chunk = noop_send_chunk  # type: ignore
+
+            # Send a message which must not be retransmitted between reliable ones.
+            await client._send(123, 456, b"M" * USERDATA_MAX_LENGTH)
+            await client._send(124, 456, b"M" * USERDATA_MAX_LENGTH, max_retransmits=0)
+            await client._send(123, 456, b"M" * USERDATA_MAX_LENGTH * 3)
+            self.assertEqual(outstanding_tsns(client), [0, 1, 2, 3])
+            self.assertEqual(queued_tsns(client), [4])
+
+            # T3 expires, which abandons chunk 1 and retransmits the others.
+            client._t3_expired()
+            client._cwnd = 4 * USERDATA_MAX_LENGTH  # Let all of them go at once.
+            await asyncio.sleep(0)
+            self.assertEqual(outstanding_tsns(client), [0, 1, 2, 3, 4])
+            self.assertEqual(client._flight_size, 4 * USERDATA_MAX_LENGTH)
+
+            # Chunk 1 stays in the sent queue behind chunk 0, and SACKs which
+            # report it missing do not count as a loss.
+            for last_seen in [3, 4, 5]:
+                sack = SackChunk()
+                sack.cumulative_tsn = 4294967295
+                sack.gaps = [(1, 1), (3, last_seen)]  # TSN 1 is missing.
+                await client._receive_chunk(sack)
+            self.assertEqual(outstanding_tsns(client), [0, 1, 2, 3, 4])
+            self.assertEqual(client._flight_size, 0)
+            self.assertIsNone(client._fast_recovery_exit)
+
+            # New data fills cwnd.
+            await client._send(123, 456, b"M" * USERDATA_MAX_LENGTH * 4)
+            self.assertEqual(client._flight_size, 4 * USERDATA_MAX_LENGTH)
+
+            # A late SACK for chunk 1 neither releases it again nor grows cwnd.
+            sack = SackChunk()
+            sack.cumulative_tsn = 4294967295
+            sack.gaps = [(1, 5)]
+            await client._receive_chunk(sack)
+            self.assertEqual(client._flight_size, 4 * USERDATA_MAX_LENGTH)
+            self.assertEqual(client._cwnd, 4 * USERDATA_MAX_LENGTH)
+
+            # Neither does the cumulative ack which retires it.
+            sack = SackChunk()
+            sack.cumulative_tsn = 4
+            await client._receive_chunk(sack)
+            self.assertEqual(outstanding_tsns(client), [5, 6, 7, 8])
+            self.assertEqual(client._flight_size, 4 * USERDATA_MAX_LENGTH)
+            self.assertEqual(client._cwnd, 4 * USERDATA_MAX_LENGTH)
+
+    @asynctest
     async def test_stale_cookie(self) -> None:
         mock_timestamp_values = [0, 61]
 
