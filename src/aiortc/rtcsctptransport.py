@@ -1212,6 +1212,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             done += 1
             if not (schunk._acked or schunk._abandoned):
                 done_bytes += schunk._book_size
+            if self._in_flight(schunk):
                 self._flight_size_decrease(schunk)
 
             # update RTO estimate
@@ -1234,8 +1235,10 @@ class RTCSctpTransport(AsyncIOEventEmitter):
                     break
                 if schunk.tsn in seen and not (schunk._acked or schunk._abandoned):
                     done_bytes += schunk._book_size
+                    if self._in_flight(schunk):
+                        self._flight_size_decrease(schunk)
                     schunk._acked = True
-                    self._flight_size_decrease(schunk)
+                    schunk._retransmit = False
                     highest_newly_acked = schunk.tsn
 
             # strike missing chunks prior to HTNA
@@ -1249,7 +1252,8 @@ class RTCSctpTransport(AsyncIOEventEmitter):
                     if schunk._misses == 3:
                         schunk._misses = 0
                         if not self._maybe_abandon(schunk):
-                            self._flight_size_decrease(schunk)
+                            if self._in_flight(schunk):
+                                self._flight_size_decrease(schunk)
                             schunk._retransmit = True
 
                         schunk._acked = False
@@ -1539,7 +1543,9 @@ class RTCSctpTransport(AsyncIOEventEmitter):
 
         # mark retransmit or abandoned chunks
         for chunk in self._sent_queue:
-            if not self._maybe_abandon(chunk):
+            # Only outstanding chunks are retransmitted (RFC 9260 section
+            # 6.3.3 E3), and a gap-acknowledged chunk is not outstanding.
+            if not self._maybe_abandon(chunk) and not chunk._acked:
                 chunk._retransmit = True
         self._update_advanced_peer_ack_point()
 
