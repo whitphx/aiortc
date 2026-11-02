@@ -13,7 +13,7 @@ from av.video.codeccontext import VideoCodecContext
 
 from ..jitterbuffer import JitterFrame
 from ..mediastreams import VIDEO_TIME_BASE, convert_timebase
-from .base import Decoder, Encoder
+from .base import PACKET_MAX, Decoder, Encoder
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,6 @@ MIN_BITRATE = 500000  # 500 kbps
 MAX_BITRATE = 3000000  # 3 Mbps
 
 MAX_FRAME_RATE = 30
-PACKET_MAX = 1300
 
 NAL_TYPE_FU_A = 28
 NAL_TYPE_STAP_A = 24

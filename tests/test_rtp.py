@@ -4,6 +4,7 @@ import sys
 from collections.abc import Callable
 
 from aiortc import rtp
+from aiortc.codecs.base import PACKET_MAX
 from aiortc.rtcrtpparameters import RTCRtpHeaderExtensionParameters, RTCRtpParameters
 from aiortc.rtp import (
     RtcpByePacket,
@@ -682,6 +683,33 @@ class RtpUtilTest(TestCase):
         self.assertEqual(recovered.csrc, packet.csrc)
         self.assertEqual(recovered.extensions, packet.extensions)
         self.assertEqual(recovered.payload, packet.payload)
+
+    def test_rtx_max_video_payload(self) -> None:
+        """
+        A retransmitted video packet carrying the maximum payload must fit in
+        the 1200 bytes libwebrtc uses for RTP packets, even with the longest
+        MID a one-byte header extension can carry.
+        """
+        extensions_map = rtp.HeaderExtensionsMap()
+        extensions_map.configure(
+            RTCRtpParameters(
+                headerExtensions=[
+                    RTCRtpHeaderExtensionParameters(
+                        id=1, uri="urn:ietf:params:rtp-hdrext:sdes:mid"
+                    ),
+                    RTCRtpHeaderExtensionParameters(
+                        id=2,
+                        uri="http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+                    ),
+                ]
+            )
+        )
+
+        packet = RtpPacket(payload_type=100, payload=b"\x00" * PACKET_MAX)
+        packet.extensions.abs_send_time = 0x123456
+        packet.extensions.mid = "M" * 16
+        rtx = wrap_rtx(packet, payload_type=101, sequence_number=1, ssrc=1234)
+        self.assertLessEqual(len(rtx.serialize(extensions_map)), 1200)
 
     def test_compute_audio_level_dbov(self) -> None:
         num_samples = 960  # 20ms @ 48kHz
