@@ -228,6 +228,18 @@ class Vp8Test(CodecTestCase):
         self.assertEqual(len(payloads[0]), PACKET_MAX)
         self.assertAlmostEqual(timestamp, 6000, delta=1)
 
+    def test_encoder_max_payload_size(self) -> None:
+        encoder = self.ensureIsInstance(
+            get_encoder(VP8_CODEC, max_payload_size=500), Vp8Encoder
+        )
+
+        frame = self.create_video_frame(width=2560, height=1920, pts=0)
+        payloads, timestamp = encoder.encode(frame)
+        self.assertEqual(len(payloads), 17)
+        self.assertEqual(len(payloads[0]), 500)
+        for payload in payloads:
+            self.assertLessEqual(len(payload), 500)
+
     def test_encoder_target_bitrate(self) -> None:
         encoder = self.ensureIsInstance(get_encoder(VP8_CODEC), Vp8Encoder)
         self.assertEqual(encoder.target_bitrate, 500000)

@@ -9,7 +9,7 @@ from ..rtcrtpparameters import (
     RTCRtpHeaderExtensionCapability,
     RTCRtpHeaderExtensionParameters,
 )
-from .base import Decoder, Encoder
+from .base import PACKET_MAX, Decoder, Encoder
 from .g711 import PcmaDecoder, PcmaEncoder, PcmuDecoder, PcmuEncoder
 from .g722 import G722Decoder, G722Encoder
 from .h264 import H264Decoder, H264Encoder, h264_depayload
@@ -164,7 +164,9 @@ def get_decoder(codec: RTCRtpCodecParameters) -> Decoder:
         raise ValueError(f"No decoder found for MIME type `{mimeType}`")
 
 
-def get_encoder(codec: RTCRtpCodecParameters) -> Encoder:
+def get_encoder(
+    codec: RTCRtpCodecParameters, max_payload_size: int = PACKET_MAX
+) -> Encoder:
     mimeType = codec.mimeType.lower()
 
     if mimeType == "audio/g722":
@@ -176,9 +178,9 @@ def get_encoder(codec: RTCRtpCodecParameters) -> Encoder:
     elif mimeType == "audio/pcmu":
         return PcmuEncoder()
     elif mimeType == "video/h264":
-        return H264Encoder()
+        return H264Encoder(max_payload_size=max_payload_size)
     elif mimeType == "video/vp8":
-        return Vp8Encoder()
+        return Vp8Encoder(max_payload_size=max_payload_size)
     else:
         raise ValueError(f"No encoder found for MIME type `{mimeType}`")
 

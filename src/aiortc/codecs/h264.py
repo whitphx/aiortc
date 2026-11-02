@@ -121,15 +121,16 @@ class H264Decoder(Decoder):
 
 
 class H264Encoder(Encoder):
-    def __init__(self) -> None:
+    def __init__(self, max_payload_size: int = PACKET_MAX) -> None:
         self.buffer_data = b""
         self.buffer_pts: Optional[int] = None
         self.codec: Optional[VideoCodecContext] = None
+        self.max_payload_size = max_payload_size
         self.__target_bitrate = DEFAULT_BITRATE
 
     @staticmethod
-    def _packetize_fu_a(data: bytes) -> list[bytes]:
-        available_size = PACKET_MAX - FU_A_HEADER_SIZE
+    def _packetize_fu_a(data: bytes, max_payload_size: int) -> list[bytes]:
+        available_size = max_payload_size - FU_A_HEADER_SIZE
         payload_size = len(data) - NAL_HEADER_SIZE
         num_packets = math.ceil(payload_size / available_size)
         num_larger_packets = payload_size % num_packets
@@ -168,10 +169,10 @@ class H264Encoder(Encoder):
 
     @staticmethod
     def _packetize_stap_a(
-        data: bytes, packages_iterator: Iterator[bytes]
+        data: bytes, packages_iterator: Iterator[bytes], max_payload_size: int
     ) -> tuple[bytes, bytes]:
         counter = 0
-        available_size = PACKET_MAX - STAP_A_HEADER_SIZE
+        available_size = max_payload_size - STAP_A_HEADER_SIZE
 
         stap_header = NAL_TYPE_STAP_A | (data[0] & 0xE0)
 
@@ -229,17 +230,23 @@ class H264Encoder(Encoder):
                 yield buf[nal_start:i]
 
     @classmethod
-    def _packetize(cls, packages: Iterable[bytes]) -> list[bytes]:
+    def _packetize(
+        cls, packages: Iterable[bytes], max_payload_size: int
+    ) -> list[bytes]:
         packetized_packages = []
 
         packages_iterator = iter(packages)
         package = next(packages_iterator, None)
         while package is not None:
-            if len(package) > PACKET_MAX:
-                packetized_packages.extend(cls._packetize_fu_a(package))
+            if len(package) > max_payload_size:
+                packetized_packages.extend(
+                    cls._packetize_fu_a(package, max_payload_size)
+                )
                 package = next(packages_iterator, None)
             else:
-                packetized, package = cls._packetize_stap_a(package, packages_iterator)
+                packetized, package = cls._packetize_stap_a(
+                    package, packages_iterator, max_payload_size
+                )
                 packetized_packages.append(packetized)
 
         return packetized_packages
@@ -292,13 +299,13 @@ class H264Encoder(Encoder):
         assert isinstance(frame, av.VideoFrame)
         packages = self._encode_frame(frame, force_keyframe)
         timestamp = convert_timebase(frame.pts, frame.time_base, VIDEO_TIME_BASE)
-        return self._packetize(packages), timestamp
+        return self._packetize(packages, self.max_payload_size), timestamp
 
     def pack(self, packet: Packet) -> tuple[list[bytes], int]:
         assert isinstance(packet, av.Packet)
         packages = self._split_bitstream(bytes(packet))
         timestamp = convert_timebase(packet.pts, packet.time_base, VIDEO_TIME_BASE)
-        return self._packetize(packages), timestamp
+        return self._packetize(packages, self.max_payload_size), timestamp
 
     @property
     def target_bitrate(self) -> int:

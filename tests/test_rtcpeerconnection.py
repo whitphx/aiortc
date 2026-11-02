@@ -5485,6 +5485,13 @@ a=rtpmap:0 PCMU/8000
         self.assertEqual("audio", parsed.media[1].kind)
 
     @asynctest
+    async def test_max_video_payload_size(self) -> None:
+        pc = RTCPeerConnection(RTCConfiguration(maxVideoPayloadSize=500))
+        transceiver = pc.addTransceiver("video")
+        self.assertEqual(transceiver.sender._max_payload_size, 500)
+        await pc.close()
+
+    @asynctest
     async def test_always_negotiate_datachannels_subsequent(self) -> None:
         pc1 = RTCPeerConnection(RTCConfiguration(alwaysNegotiateDataChannels=True))
         pc2 = RTCPeerConnection()

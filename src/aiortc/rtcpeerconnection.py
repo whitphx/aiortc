@@ -1200,6 +1200,7 @@ class RTCPeerConnection(AsyncIOEventEmitter):
             receiver=RTCRtpReceiver(kind, dtlsTransport),
         )
         transceiver.receiver._set_rtcp_ssrc(transceiver.sender._ssrc)
+        transceiver.sender._max_payload_size = self.__configuration.maxVideoPayloadSize
         transceiver.sender._stream_id = self.__stream_id
         transceiver._bundled = bundled
         self.__transceivers.append(transceiver)

@@ -12,7 +12,7 @@ from av.frame import Frame
 
 from . import clock, rtp
 from .codecs import get_capabilities, get_encoder, is_rtx
-from .codecs.base import Encoder
+from .codecs.base import PACKET_MAX, Encoder
 from .exceptions import InvalidStateError
 from .mediastreams import MediaStreamError, MediaStreamTrack
 from .rtcdtlstransport import RTCDtlsTransport
@@ -101,6 +101,7 @@ class RTCRtpSender:
         # FIXME: how should this be initialised?
         self._stream_id = str(uuid.uuid4())
         self._enabled = True
+        self._max_payload_size = PACKET_MAX
         self.__encoder: Optional[Encoder] = None
         self.__force_keyframe = False
         self.__loop = asyncio.get_event_loop()
@@ -306,7 +307,7 @@ class RTCRtpSender:
         audio_level = None
 
         if self.__encoder is None:
-            self.__encoder = get_encoder(codec)
+            self.__encoder = get_encoder(codec, self._max_payload_size)
 
         if isinstance(data, Frame):
             # Encode the frame.

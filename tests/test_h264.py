@@ -129,6 +129,17 @@ class H264Test(CodecTestCase):
         self.assertEqual(payloads, [b"\x00"])
         self.assertEqual(timestamp, 90)
 
+    def test_encoder_max_payload_size(self) -> None:
+        encoder = self.ensureIsInstance(
+            get_encoder(H264_CODEC, max_payload_size=500), H264Encoder
+        )
+
+        frame = self.create_video_frame(width=1280, height=720, pts=0)
+        payloads, timestamp = encoder.encode(frame)
+        self.assertGreaterEqual(len(payloads), 3)
+        for payload in payloads:
+            self.assertLessEqual(len(payload), 500)
+
     def test_encoder_target_bitrate(self) -> None:
         encoder = self.ensureIsInstance(get_encoder(H264_CODEC), H264Encoder)
         self.assertEqual(encoder.target_bitrate, 1000000)
@@ -205,34 +216,51 @@ class H264Test(CodecTestCase):
 
     def test_packetize_one_small(self) -> None:
         packages = [bytes([0xFF, 0xFF])]
-        packetize_packages = H264Encoder._packetize(packages)
+        packetize_packages = H264Encoder._packetize(packages, PACKET_MAX)
         self.assertListEqual(packages, packetize_packages)
 
         packages = [bytes([0xFF]) * PACKET_MAX]
-        packetize_packages = H264Encoder._packetize(packages)
+        packetize_packages = H264Encoder._packetize(packages, PACKET_MAX)
         self.assertListEqual(packages, packetize_packages)
 
     def test_packetize_one_big(self) -> None:
         packages = [bytes([0xFF, 0xFF] * 1000)]
-        packetize_packages = H264Encoder._packetize(packages)
+        packetize_packages = H264Encoder._packetize(packages, PACKET_MAX)
         self.assertEqual(len(packetize_packages), 2)
         self.assertEqual(packetize_packages[0][0] & 0x1F, 28)
         self.assertEqual(packetize_packages[1][0] & 0x1F, 28)
 
+    def test_packetize_max_payload_size(self) -> None:
+        # A NAL unit larger than the limit is split into FU-A fragments.
+        packages = [bytes([0x01]) + bytes(999)]
+        packetize_packages = H264Encoder._packetize(packages, 500)
+        self.assertEqual(len(packetize_packages), 3)
+        for packetize_package in packetize_packages:
+            self.assertEqual(packetize_package[0] & 0x1F, 28)
+            self.assertLessEqual(len(packetize_package), 500)
+
+        # Small NAL units are aggregated into STAP-A packets within the limit.
+        packages = [bytes([0x01]) + bytes(199)] * 3
+        packetize_packages = H264Encoder._packetize(packages, 500)
+        self.assertEqual(len(packetize_packages), 2)
+        self.assertEqual(packetize_packages[0][0] & 0x1F, 24)
+        self.assertEqual(len(packetize_packages[0]), 405)
+        self.assertEqual(packetize_packages[1], packages[-1])
+
     def test_packetize_two_small(self) -> None:
         packages = [bytes([0x01, 0xFF]), bytes([0xFF, 0xFF])]
-        packetize_packages = H264Encoder._packetize(packages)
+        packetize_packages = H264Encoder._packetize(packages, PACKET_MAX)
         self.assertEqual(len(packetize_packages), 1)
         self.assertEqual(packetize_packages[0][0] & 0x1F, 24)
 
     def test_packetize_multiple_small(self) -> None:
         packages = [bytes([0x01, 0xFF])] * 9
-        packetize_packages = H264Encoder._packetize(packages)
+        packetize_packages = H264Encoder._packetize(packages, PACKET_MAX)
         self.assertEqual(len(packetize_packages), 1)
         self.assertEqual(packetize_packages[0][0] & 0x1F, 24)
 
         packages = [bytes([0x01, 0xFF])] * 10
-        packetize_packages = H264Encoder._packetize(packages)
+        packetize_packages = H264Encoder._packetize(packages, PACKET_MAX)
         self.assertEqual(len(packetize_packages), 2)
         self.assertEqual(packetize_packages[0][0] & 0x1F, 24)
         self.assertEqual(packetize_packages[1], packages[-1])

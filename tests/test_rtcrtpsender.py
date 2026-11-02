@@ -319,6 +319,31 @@ class RTCRtpSenderTest(TestCase):
             await sender.stop()
 
     @asynctest
+    async def test_max_payload_size(self) -> None:
+        queue: asyncio.Queue[RtpPacket] = asyncio.Queue()
+
+        async def mock_send_rtp(data: bytes) -> None:
+            if not is_rtcp(data):
+                await queue.put(RtpPacket.parse(data))
+
+        async with dummy_dtls_transport_pair() as (local_transport, _):
+            local_transport._send_rtp = mock_send_rtp  # type: ignore
+
+            sender = RTCRtpSender(VideoPacketStreamTrack(), local_transport)
+            sender._max_payload_size = 500
+            await sender.send(RTCRtpSendParameters(codecs=[H264_CODEC]))
+
+            # The 1020-byte NAL unit of the first frame is fragmented.
+            packets = [await queue.get()]
+            while not packets[-1].marker:
+                packets.append(await queue.get())
+            await sender.stop()
+
+            self.assertEqual(len(packets), 3)
+            for packet in packets:
+                self.assertLessEqual(len(packet.payload), 500)
+
+    @asynctest
     async def test_retransmit(self) -> None:
         """
         Ask for an RTP packet retransmission.

@@ -178,8 +178,9 @@ class Vp8Decoder(Decoder):
 
 
 class Vp8Encoder(Encoder):
-    def __init__(self) -> None:
+    def __init__(self, max_payload_size: int = PACKET_MAX) -> None:
         self.codec: Optional[VideoCodecContext] = None
+        self.max_payload_size = max_payload_size
         self.picture_id = random.randint(0, (1 << 15) - 1)
         self.__target_bitrate = DEFAULT_BITRATE
 
@@ -237,13 +238,15 @@ class Vp8Encoder(Encoder):
             data_to_send += bytes(package)
 
         # Packetize.
-        payloads = self._packetize(data_to_send, self.picture_id)
+        payloads = self._packetize(data_to_send, self.picture_id, self.max_payload_size)
         timestamp = convert_timebase(frame.pts, frame.time_base, VIDEO_TIME_BASE)
         self.picture_id = (self.picture_id + 1) % (1 << 15)
         return payloads, timestamp
 
     def pack(self, packet: Packet) -> tuple[list[bytes], int]:
-        payloads = self._packetize(bytes(packet), self.picture_id)
+        payloads = self._packetize(
+            bytes(packet), self.picture_id, self.max_payload_size
+        )
         timestamp = convert_timebase(packet.pts, packet.time_base, VIDEO_TIME_BASE)
         self.picture_id = (self.picture_id + 1) % (1 << 15)
         return payloads, timestamp
@@ -261,7 +264,9 @@ class Vp8Encoder(Encoder):
         self.__target_bitrate = bitrate
 
     @classmethod
-    def _packetize(cls, buffer: bytes, picture_id: int) -> list[bytes]:
+    def _packetize(
+        cls, buffer: bytes, picture_id: int, max_payload_size: int
+    ) -> list[bytes]:
         payloads = []
         descr = VpxPayloadDescriptor(
             partition_start=1, partition_id=0, picture_id=picture_id
@@ -270,7 +275,7 @@ class Vp8Encoder(Encoder):
         pos = 0
         while pos < length:
             descr_bytes = bytes(descr)
-            size = min(length - pos, PACKET_MAX - len(descr_bytes))
+            size = min(length - pos, max_payload_size - len(descr_bytes))
             payloads.append(descr_bytes + buffer[pos : pos + size])
             descr.partition_start = 0
             pos += size

@@ -2,6 +2,8 @@ import enum
 from dataclasses import dataclass
 from typing import Optional, Union
 
+from .codecs.base import PACKET_MAX
+
 
 @dataclass
 class RTCIceServer:
@@ -67,3 +69,10 @@ class RTCConfiguration:
 
     alwaysNegotiateDataChannels: bool = False
     "Whether to always negotiate data channels in the SDP."
+
+    maxVideoPayloadSize: int = PACKET_MAX
+    """
+    The maximum size in bytes of the payload of an outgoing video RTP packet.
+    Lower it if the network path drops large packets, which shows as video
+    never decoding on the remote side while audio plays.
+    """
