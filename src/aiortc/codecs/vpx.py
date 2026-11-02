@@ -12,7 +12,7 @@ from av.video.codeccontext import VideoCodecContext
 
 from ..jitterbuffer import JitterFrame
 from ..mediastreams import VIDEO_TIME_BASE, convert_timebase
-from .base import Decoder, Encoder
+from .base import PACKET_MAX, Decoder, Encoder
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,6 @@ MIN_BITRATE = 250000  # 250 kbps
 MAX_BITRATE = 1500000  # 1.5 Mbps
 
 MAX_FRAME_RATE = 30
-PACKET_MAX = 1300
 
 DESCRIPTOR_T = TypeVar("DESCRIPTOR_T", bound="VpxPayloadDescriptor")
 

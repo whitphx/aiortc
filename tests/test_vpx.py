@@ -4,6 +4,7 @@ from contextlib import redirect_stderr
 from unittest import TestCase
 
 from aiortc.codecs import get_decoder, get_encoder
+from aiortc.codecs.base import PACKET_MAX
 from aiortc.codecs.vpx import (
     Vp8Decoder,
     Vp8Encoder,
@@ -175,14 +176,14 @@ class Vp8Test(CodecTestCase):
         frame = self.create_video_frame(width=640, height=480, pts=0)
         payloads, timestamp = encoder.encode(frame)
         self.assertEqual(len(payloads), 1)
-        self.assertTrue(len(payloads[0]) < 1300)
+        self.assertTrue(len(payloads[0]) < PACKET_MAX)
         self.assertEqual(timestamp, 0)
 
         # change resolution
         frame = self.create_video_frame(width=320, height=240, pts=3000)
         payloads, timestamp = encoder.encode(frame)
         self.assertEqual(len(payloads), 1)
-        self.assertTrue(len(payloads[0]) < 1300)
+        self.assertTrue(len(payloads[0]) < PACKET_MAX)
         self.assertAlmostEqual(timestamp, 3000, delta=1)
 
     def test_encoder_rgb(self) -> None:
@@ -191,7 +192,7 @@ class Vp8Test(CodecTestCase):
         frame = self.create_video_frame(width=640, height=480, pts=0, format="rgb24")
         payloads, timestamp = encoder.encode(frame)
         self.assertEqual(len(payloads), 1)
-        self.assertTrue(len(payloads[0]) < 1300)
+        self.assertTrue(len(payloads[0]) < PACKET_MAX)
         self.assertEqual(timestamp, 0)
 
     def test_encoder_pack(self) -> None:
@@ -209,22 +210,22 @@ class Vp8Test(CodecTestCase):
         # first keyframe
         frame = self.create_video_frame(width=2560, height=1920, pts=0)
         payloads, timestamp = encoder.encode(frame)
-        self.assertEqual(len(payloads), 7)
-        self.assertEqual(len(payloads[0]), 1300)
+        self.assertEqual(len(payloads), 8)
+        self.assertEqual(len(payloads[0]), PACKET_MAX)
         self.assertEqual(timestamp, 0)
 
         # delta frame
         frame = self.create_video_frame(width=2560, height=1920, pts=3000)
         payloads, timestamp = encoder.encode(frame)
         self.assertEqual(len(payloads), 1)
-        self.assertTrue(len(payloads[0]) < 1300)
+        self.assertTrue(len(payloads[0]) < PACKET_MAX)
         self.assertAlmostEqual(timestamp, 3000, delta=1)
 
         # force keyframe
         frame = self.create_video_frame(width=2560, height=1920, pts=6000)
         payloads, timestamp = encoder.encode(frame, force_keyframe=True)
-        self.assertEqual(len(payloads), 7)
-        self.assertEqual(len(payloads[0]), 1300)
+        self.assertEqual(len(payloads), 8)
+        self.assertEqual(len(payloads[0]), PACKET_MAX)
         self.assertAlmostEqual(timestamp, 6000, delta=1)
 
     def test_encoder_target_bitrate(self) -> None:
@@ -234,7 +235,7 @@ class Vp8Test(CodecTestCase):
         frame = self.create_video_frame(width=640, height=480, pts=0)
         payloads, timestamp = encoder.encode(frame)
         self.assertEqual(len(payloads), 1)
-        self.assertTrue(len(payloads[0]) < 1300)
+        self.assertTrue(len(payloads[0]) < PACKET_MAX)
         self.assertEqual(timestamp, 0)
 
         # change target bitrate
@@ -244,7 +245,7 @@ class Vp8Test(CodecTestCase):
         frame = self.create_video_frame(width=640, height=480, pts=3000)
         payloads, timestamp = encoder.encode(frame)
         self.assertEqual(len(payloads), 1)
-        self.assertTrue(len(payloads[0]) < 1300)
+        self.assertTrue(len(payloads[0]) < PACKET_MAX)
         self.assertAlmostEqual(timestamp, 3000, delta=1)
 
     def test_number_of_threads(self) -> None:

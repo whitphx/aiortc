@@ -4,6 +4,7 @@ from contextlib import redirect_stderr
 from unittest import TestCase
 
 from aiortc.codecs import get_decoder, get_encoder
+from aiortc.codecs.base import PACKET_MAX
 from aiortc.codecs.h264 import H264Decoder, H264Encoder, H264PayloadDescriptor
 from aiortc.jitterbuffer import JitterFrame
 from aiortc.rtcrtpparameters import RTCRtpCodecParameters
@@ -135,7 +136,7 @@ class H264Test(CodecTestCase):
         frame = self.create_video_frame(width=640, height=480, pts=0)
         packages, timestamp = encoder.encode(frame)
         self.assertGreaterEqual(len(packages), 1)
-        self.assertTrue(len(packages[0]) < 1300)
+        self.assertTrue(len(packages[0]) < PACKET_MAX)
         self.assertEqual(timestamp, 0)
 
         # change target bitrate
@@ -145,7 +146,7 @@ class H264Test(CodecTestCase):
         frame = self.create_video_frame(width=640, height=480, pts=3000)
         packages, timestamp = encoder.encode(frame)
         self.assertGreaterEqual(len(packages), 1)
-        self.assertTrue(len(packages[0]) < 1300)
+        self.assertTrue(len(packages[0]) < PACKET_MAX)
         self.assertEqual(timestamp, 3000)
 
     def test_roundtrip_1280_720(self) -> None:
@@ -207,7 +208,7 @@ class H264Test(CodecTestCase):
         packetize_packages = H264Encoder._packetize(packages)
         self.assertListEqual(packages, packetize_packages)
 
-        packages = [bytes([0xFF]) * 1300]
+        packages = [bytes([0xFF]) * PACKET_MAX]
         packetize_packages = H264Encoder._packetize(packages)
         self.assertListEqual(packages, packetize_packages)
 
