@@ -4,6 +4,8 @@ from typing import Optional, Union
 
 from .codecs.base import PACKET_MAX
 
+MIN_VIDEO_PAYLOAD_SIZE = 100
+
 
 @dataclass
 class RTCIceServer:
@@ -72,7 +74,16 @@ class RTCConfiguration:
 
     maxVideoPayloadSize: int = PACKET_MAX
     """
-    The maximum size in bytes of the payload of an outgoing video RTP packet.
-    Lower it if the network path drops large packets, which shows as video
-    never decoding on the remote side while audio plays.
+    The maximum size in bytes of the payload of an outgoing video RTP packet,
+    excluding the RTP header and its extensions. Lower it if the network path
+    drops large packets, which shows as video never decoding on the remote
+    side while audio plays.
     """
+
+    def __post_init__(self) -> None:
+        # The packetizers loop forever or fail when the payload headers leave
+        # no room for data.
+        if self.maxVideoPayloadSize < MIN_VIDEO_PAYLOAD_SIZE:
+            raise ValueError(
+                f"maxVideoPayloadSize must be at least {MIN_VIDEO_PAYLOAD_SIZE}"
+            )
